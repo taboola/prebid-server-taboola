@@ -43,7 +43,6 @@ func Builder(bidderName openrtb_ext.BidderName, config config.Adapter, server co
 }
 
 func (a *adapter) MakeRequests(request *openrtb2.BidRequest, requestInfo *adapters.ExtraRequestInfo) ([]*adapters.RequestData, []error) {
-
 	var requests []*adapters.RequestData
 
 	taboolaRequests, errs := createTaboolaRequests(request)
@@ -121,7 +120,7 @@ func (a *adapter) buildRequest(request *openrtb2.BidRequest) (*adapters.RequestD
 		DISPLAY_ENDPOINT_PREFIX = "display"
 	)
 
-	//set MediaType based on first imp
+	// set MediaType based on first imp
 	var mediaType string
 	if request.Imp[0].Banner != nil {
 		mediaType = DISPLAY_ENDPOINT_PREFIX
@@ -163,6 +162,17 @@ func createTaboolaRequests(request *openrtb2.BidRequest) (taboolaRequests []*ope
 	var errs []error
 
 	var taboolaExt openrtb_ext.ImpExtTaboola
+
+	// user ID extraction logic - checking user.ext.eids for source="taboola.com"
+	if userID, err := findTaboolaUserId(modifiedRequest.User); err == nil && userID != "" {
+		if modifiedRequest.User == nil {
+			modifiedRequest.User = &openrtb2.User{}
+		}
+		modifiedRequest.User.BuyerUID = userID
+	} else if err != nil {
+		errs = append(errs, err)
+	}
+
 	for i := 0; i < len(modifiedRequest.Imp); i++ {
 		imp := modifiedRequest.Imp[i]
 
@@ -180,7 +190,6 @@ func createTaboolaRequests(request *openrtb2.BidRequest) (taboolaRequests []*ope
 		if len(taboolaExt.TagID) < 1 {
 			tagId = taboolaExt.TagId
 		}
-
 		imp.TagID = tagId
 		modifiedRequest.Imp[i] = imp
 
@@ -200,13 +209,11 @@ func createTaboolaRequests(request *openrtb2.BidRequest) (taboolaRequests []*ope
 		} else if modifiedRequest.Imp[i].Native != nil {
 			nativeImp = append(nativeImp, modifiedRequest.Imp[i])
 		}
-
 	}
 
 	publisher := &openrtb2.Publisher{
 		ID: taboolaExt.PublisherId,
 	}
-
 	if modifiedRequest.Site == nil {
 		newSite := &openrtb2.Site{
 			ID:        taboolaExt.PublisherId,
@@ -227,7 +234,6 @@ func createTaboolaRequests(request *openrtb2.BidRequest) (taboolaRequests []*ope
 	if taboolaExt.BCat != nil {
 		modifiedRequest.BCat = taboolaExt.BCat
 	}
-
 	if taboolaExt.BAdv != nil {
 		modifiedRequest.BAdv = taboolaExt.BAdv
 	}
@@ -243,7 +249,6 @@ func createTaboolaRequests(request *openrtb2.BidRequest) (taboolaRequests []*ope
 
 	taboolaRequests = append(taboolaRequests, overrideBidRequestImp(&modifiedRequest, nativeImp))
 	taboolaRequests = append(taboolaRequests, overrideBidRequestImp(&modifiedRequest, bannerImp))
-
 	return taboolaRequests, errs
 }
 
@@ -251,13 +256,11 @@ func makeRequestExt(pageType string) (json.RawMessage, error) {
 	requestExt := &RequestExt{
 		PageType: pageType,
 	}
-
 	requestExtJson, err := json.Marshal(requestExt)
 	if err != nil {
 		return nil, fmt.Errorf("could not marshal %s, err: %s", requestExt, err)
 	}
 	return requestExtJson, nil
-
 }
 
 func getMediaType(impID string, imps []openrtb2.Imp) (openrtb_ext.BidType, error) {
@@ -270,7 +273,6 @@ func getMediaType(impID string, imps []openrtb2.Imp) (openrtb_ext.BidType, error
 			}
 		}
 	}
-
 	return "", &errortypes.BadInput{
 		Message: fmt.Sprintf("Failed to find banner/native impression \"%s\" ", impID),
 	}
@@ -298,4 +300,27 @@ func resolveMacros(bid *openrtb2.Bid) {
 		bid.NURL = strings.Replace(bid.NURL, "${AUCTION_PRICE}", price, -1)
 		bid.AdM = strings.Replace(bid.AdM, "${AUCTION_PRICE}", price, -1)
 	}
+}
+
+// findTaboolaUserId attempts to read user.ext.eids (openrtb2.EID) and locate the one with source="taboola.com".
+// If found, returns the ID. If user is nil, or no eids, or no taboola.com found, returns empty string.
+func findTaboolaUserId(user *openrtb2.User) (string, error) {
+	if user == nil || user.Ext == nil {
+		return "", nil
+	}
+
+	var userExt struct {
+		Eids []openrtb2.EID `json:"eids,omitempty"`
+	}
+
+	if err := json.Unmarshal(user.Ext, &userExt); err != nil {
+		return "", fmt.Errorf("error parsing user.ext eids: %v", err)
+	}
+
+	for _, eid := range userExt.Eids {
+		if strings.EqualFold(eid.Source, "taboola.com") && len(eid.UIDs) > 0 {
+			return eid.UIDs[0].ID, nil
+		}
+	}
+	return "", nil
 }
